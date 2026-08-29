@@ -3,24 +3,72 @@
 
 # Soenneker.Apollo.Runners.OpenApiClient
 
-Provides file cleanup and filesystem operations used by the generated-client update workflow.
+The automation runner that regenerates and publishes changes to `Soenneker.Apollo.OpenApiClient` from Apollo's OpenAPI document.
 
-> This is an automation runner, not a package intended for application consumption.
+This repository is an executable used by the client-maintenance workflow. It is not a NuGet package or an application dependency.
 
-## What the runner does
+## Workflow
 
-- `IFileOperationsUtil.Process(cancellationToken)` — Runs the OpenAPI client regeneration workflow, including cleanup and post-processing.
+One run performs the following operations:
 
-## What you get
+1. Clones `soenneker/soenneker.apollo.openapiclient` into a temporary directory.
+2. Downloads Apollo's OpenAPI JSON document.
+3. Writes a corrected copy through `IOpenApiFixer`.
+4. Ensures Kiota is installed.
+5. Deletes generated source content while preserving the project file.
+6. Regenerates `ApolloOpenApiClient` and its models with Kiota.
+7. Restores and builds the generated client in Release configuration.
+8. If the build succeeds, commits and pushes the generated changes with the message `Automated update`.
 
-- `IFileOperationsUtil` — Provides file cleanup and filesystem operations used by the generated-client update workflow.
+The target checkout is temporary; the runner does not regenerate files in its own repository.
 
-## API at a glance
+## Configuration
 
-| API | What it does | Result / important behavior |
-| --- | --- | --- |
-| `IFileOperationsUtil.Process(cancellationToken)` | Runs the OpenAPI client regeneration workflow, including cleanup and post-processing. | A task that completes when the full processing workflow has finished. |
+Apollo's published document is used by default:
 
-## Practical notes
+```text
+https://docs.apollo.io/openapi/apollo-rest-api.json
+```
 
-- Cancellation stops pending work; it does not undo work that has already completed.
+Override it through configuration when validating another document:
+
+```json
+{
+  "Apollo": {
+    "ClientGenerationUrl": "https://example.com/apollo-openapi.json"
+  }
+}
+```
+
+The executable requires these environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `ASPNETCORE_ENVIRONMENT` | Selects the host environment and logging configuration. |
+| `GH__TOKEN` | Authenticates the final Git push. |
+| `GIT__NAME` | Commit author name used by the automation. |
+| `GIT__EMAIL` | Commit author email used by the automation. |
+
+Additional configuration required by the shared runner, Git, download, and logging utilities must also be available to the host.
+
+## Run locally
+
+```bash
+dotnet run --project src/Soenneker.Apollo.Runners.OpenApiClient
+```
+
+Set the required environment variables before starting the process. The runner has no dry-run mode: a successful generation and build proceeds to commit and push. Use credentials and a target configuration intended for automation, and do not run it merely to preview generated output.
+
+Pressing Ctrl+C requests cancellation. Cancellation stops pending work where supported, but it does not roll back downloads, generated files, commits, or remote operations that have already completed.
+
+## Failure behavior
+
+- A failed OpenAPI download terminates the run with an exception.
+- Individual cleanup failures are logged so the workflow can continue where possible.
+- A failed generated-client build is logged and prevents the commit/push step.
+- An unhandled workflow exception sets the process exit code to `1`.
+- Cancellation before a normal result uses exit code `-1`.
+
+## Internal service
+
+`IFileOperationsUtil.Process(CancellationToken)` owns the complete clone/download/fix/generate/build/push workflow. `Startup.SetupIoC` registers it with the shared runner dependencies and a hosted service that shuts down the process after one execution.
